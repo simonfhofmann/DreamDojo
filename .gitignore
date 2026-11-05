@@ -39,6 +39,8 @@ credentials/
 .env.*
 
 # Data / Model artifacts
+datasets/
+checkpoints/
 *.pt
 *.pth
 *.ckpt
