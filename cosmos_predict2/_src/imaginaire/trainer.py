@@ -167,6 +167,9 @@ class ImaginaireTrainer:
         self.callbacks.on_optimizer_init_start()
         optimizer, scheduler = model.init_optimizer_scheduler(self.config.optimizer, self.config.scheduler)
         grad_scaler = torch.amp.GradScaler("cuda", **self.config.trainer.grad_scaler_args)
+        self._optimizer = optimizer
+        self._scheduler = scheduler
+        self._should_stop = False
         self.callbacks.on_optimizer_init_end()
         # Load the model checkpoint and get the starting iteration number.
         iteration = self.checkpointer.load(model, optimizer, scheduler, grad_scaler)
@@ -245,6 +248,10 @@ class ImaginaireTrainer:
                     # Validation.
                     if self.config.trainer.run_validation and iteration % self.config.trainer.validation_iter == 0:
                         self.validate(model, dataloader_val, iteration=iteration)
+                        if self._should_stop:
+                            log.info(f"Early stopping requested at iteration {iteration}; ending training loop.")
+                            _end_training = True
+                            break
                     # This iteration is successful; reset the timeout signal.
                     signal.alarm(self.config.trainer.timeout_period)
                     self.straggler_detector.generate_report(iteration)

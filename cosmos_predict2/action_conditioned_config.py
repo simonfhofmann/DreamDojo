@@ -41,6 +41,7 @@ class ActionConditionedSetupArguments(CommonSetupArguments):
     # Override defaults
     # pyrefly: ignore  # invalid-annotation
     model: get_model_literal(ModelVariant.ROBOT_ACTION_COND) = DEFAULT_MODEL_KEY.name
+    checkpoint_path: Path | None = Path("checkpoints/DreamDojo/2B_YAM_post-train/iter_000050000/model_ema_bf16.pt")
 
     checkpoints_dir: str = "checkpoints/exp1201/gr1/checkpoints"
     save_dir: str = "results/action2world"

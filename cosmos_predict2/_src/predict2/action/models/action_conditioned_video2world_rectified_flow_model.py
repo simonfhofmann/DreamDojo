@@ -54,6 +54,7 @@ class Video2WorldModelRectifiedFlowConfig(Text2WorldModelRectifiedFlowConfig):
     conditioning_strategy: str = str(ConditioningStrategy.FRAME_REPLACE)  # What strategy to use for conditioning
     denoise_replace_gt_frames: bool = True  # Whether to denoise the ground truth frames
     conditional_frames_probs: Optional[Dict[int, float]] = None  # Probability distribution for conditional frames
+    cond_frame_noise_std: float = 0.0  # Max Gaussian noise std added to conditioning frames during training
 
     def __attrs_post_init__(self):
         super().__attrs_post_init__()
@@ -197,6 +198,16 @@ class ActionVideo2WorldModelRectifiedFlow(Text2WorldModelRectifiedFlow):
             condition_video_mask = condition.condition_video_input_mask_B_C_T_H_W.repeat(1, C, 1, 1, 1).type_as(
                 xt_B_C_T_H_W
             )
+
+            if self.training and self.config.cond_frame_noise_std > 0.0:
+                B = condition_state_in_B_C_T_H_W.shape[0]
+                noise_scale = (
+                    torch.rand((B, 1, 1, 1, 1), device=xt_B_C_T_H_W.device, dtype=xt_B_C_T_H_W.dtype)
+                    * self.config.cond_frame_noise_std
+                )
+                condition_state_in_B_C_T_H_W = (
+                    condition_state_in_B_C_T_H_W + noise_scale * torch.randn_like(condition_state_in_B_C_T_H_W)
+                )
 
             # Make the first few frames of x_t be the ground truth frames
             xt_B_C_T_H_W = condition_state_in_B_C_T_H_W * condition_video_mask + xt_B_C_T_H_W * (

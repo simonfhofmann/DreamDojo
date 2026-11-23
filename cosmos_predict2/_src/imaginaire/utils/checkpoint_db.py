@@ -257,7 +257,7 @@ _register_checkpoint(
         if EXPERIMENTAL_CHECKPOINTS
         else CheckpointFileHf(
             repository="nvidia/Cosmos-Predict2.5-2B",
-            revision="6787e176dce74a101d922174a95dba29fa5f0c55",
+            revision="main",
             filename="tokenizer.pth",
         ),
     ),

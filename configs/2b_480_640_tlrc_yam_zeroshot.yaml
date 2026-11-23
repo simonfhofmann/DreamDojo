@@ -1,0 +1,42 @@
+job:
+  project: dreamdojo
+  group: tlrc_yam_eval
+  name: tlrc_bimanual_yam_zeroshot
+
+checkpoint:
+  load_path: checkpoints/DreamDojo/2B_YAM_post-train/iter_000050000/
+  load_training_state: false
+  strict_resume: false
+  dcp_async_mode_enabled: false
+
+model_parallel:
+  context_parallel_size: 1
+
+model:
+  config:
+    ema:
+      enabled: false
+    text_encoder_config:
+      compute_online: false
+    use_lora: false
+    state_t: 4  # 1 + 12 // 4
+    net:
+      action_dim: 384
+      temporal_compression_ratio: 4
+      num_action_per_chunk: 12
+      zero_init_action_embedder: false
+      sac_config:
+        mode: "mm_only"
+
+dataloader_val:
+  batch_size: 1
+  num_workers: 2
+  dataset:
+    num_frames: 13
+    dataset_path:
+      - datasets/tlrc_bimanual_yam_twoarm_benchmark
+    data_split: full
+    camera_layout: head
+    cr1_embeddings_path: datasets/cr1_empty_text_embeddings.pt
+    single_base_index: false
+    deterministic_uniform_sampling: false

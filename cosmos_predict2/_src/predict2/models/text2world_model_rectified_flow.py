@@ -101,6 +101,7 @@ class Text2WorldModelRectifiedFlowConfig:
     lora_alpha: int = 32
     use_dora: bool = False
     lora_target_modules: str = "q_proj,k_proj,v_proj,output_proj,mlp.layer1,mlp.layer2"
+    lora_unfreeze_modules: str = ""
     init_lora_weights: bool = True
 
     shift: int = 5
@@ -176,16 +177,18 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
         if self.config.text_encoder_config is not None and self.config.text_encoder_config.compute_online:
             self.text_encoder = TextEncoder(self.config.text_encoder_config)
 
-        self.lam = LAM(
-            image_channels=3,
-            lam_model_dim=1024,
-            lam_latent_dim=32,
-            lam_patch_size=16,
-            lam_enc_blocks=24,
-            lam_dec_blocks=24,
-            lam_num_heads=16,
-            ckpt_path="checkpoints/DreamDojo/LAM_400k.ckpt",
-        )
+        self.lam = None
+        if os.path.exists("checkpoints/DreamDojo/LAM_400k.ckpt"):
+            self.lam = LAM(
+                image_channels=3,
+                lam_model_dim=1024,
+                lam_latent_dim=32,
+                lam_patch_size=16,
+                lam_enc_blocks=24,
+                lam_dec_blocks=24,
+                lam_num_heads=16,
+                ckpt_path="checkpoints/DreamDojo/LAM_400k.ckpt",
+            )
 
         # 7. training states
         if parallel_state.is_initialized():
@@ -860,13 +863,14 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
             data_batch["t5_text_embeddings"] = text_embeddings
             data_batch["t5_text_mask"] = torch.ones(text_embeddings.shape[0], text_embeddings.shape[1], device="cuda")
 
-        lam_video = rearrange(data_batch["lam_video"], "b (p t) h w c -> (b p) t h w c", t=2)
-        lam_input = {"videos": lam_video}
-        with torch.no_grad():
-            outputs = self.lam.lam(lam_input)
-        latent_action = outputs["z_rep"].squeeze().to(data_batch["action"].dtype).detach()
-        latent_action = rearrange(latent_action, "(t b) d -> b t d", t=data_batch["action"].shape[1])
-        data_batch["action"][:, :, -32:] = data_batch["action"][:, :, -32:] * latent_action
+        if self.lam is not None and (data_batch["action"][:, :, -32:] != 0).any():
+            lam_video = rearrange(data_batch["lam_video"], "b (p t) h w c -> (b p) t h w c", t=2)
+            lam_input = {"videos": lam_video}
+            with torch.no_grad():
+                outputs = self.lam.lam(lam_input)
+            latent_action = outputs["z_rep"].squeeze(1).to(data_batch["action"].dtype).detach()
+            latent_action = rearrange(latent_action, "(t b) d -> b t d", t=data_batch["action"].shape[1])
+            data_batch["action"][:, :, -32:] = data_batch["action"][:, :, -32:] * latent_action
 
         # Get the input data to noise and denoise~(image, video) and the corresponding conditioner.
         _, x0_B_C_T_H_W, condition = self.get_data_and_condition(data_batch)
@@ -1247,6 +1251,18 @@ class Text2WorldModelRectifiedFlow(ImaginaireModel):
             network = get_peft_model(network, lora_config)
         except Exception as e:
             raise RuntimeError(f"Failed to inject LoRA adapters into model: {e}") from e
+
+        if self.config.lora_unfreeze_modules:
+            unfreeze_patterns = [m.strip() for m in self.config.lora_unfreeze_modules.split(",") if m.strip()]
+            unfrozen_count = 0
+            for name, param in network.named_parameters():
+                if any(pat in name for pat in unfreeze_patterns):
+                    if not param.requires_grad:
+                        param.requires_grad = True
+                        unfrozen_count += param.numel()
+            log.info(
+                f"Unfroze additional modules matching {unfreeze_patterns}: +{unfrozen_count:,} trainable parameters"
+            )
 
         # Count and log LoRA parameters
         lora_params = 0

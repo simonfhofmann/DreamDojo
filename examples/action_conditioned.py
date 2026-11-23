@@ -41,16 +41,12 @@ class Args(pydantic.BaseModel):
 
 
 def convert_checkpoint(checkpoint_iter_dir: Path):
-    subprocess.run(
-        ["sudo", "chmod", "-R", "777", str(checkpoint_iter_dir)],
-        check=True,
-        capture_output=True
-    )
-
+    import sys
     result = subprocess.run(
-        ["python", "./scripts/convert_distcp_to_pt.py", str(checkpoint_iter_dir / "model"), str(checkpoint_iter_dir)],
+        [sys.executable, "./scripts/convert_distcp_to_pt.py", str(checkpoint_iter_dir / "model"), str(checkpoint_iter_dir)],
         check=True,
-        capture_output=True
+        capture_output=True,
+        text=True,
     )
     print(result.stdout)
 

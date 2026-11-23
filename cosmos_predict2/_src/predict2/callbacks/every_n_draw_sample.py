@@ -248,25 +248,23 @@ class EveryNDrawSample(EveryN):
 
             log.debug("waiting for all ranks to finish", rank0_only=False)
             dist.barrier()
-        # if wandb.run:
-        #     sample_counter = getattr(trainer, "sample_counter", iteration)
-        #     data_type = "image" if model.is_image_batch(data_batch) else "video"
-        #     tag += f"_{data_type}"
-        #     info = {
-        #         "trainer/global_step": iteration,
-        #         "sample_counter": sample_counter,
-        #     }
-        #     if self.do_x0_prediction:
-        #         info[f"{self.name}/{tag}_x0"] = wandb.Image(x0_img_fp, caption=f"{sample_counter}")
-        #         # convert mse_loss to a dict
-        #         mse_loss = mse_loss.tolist()
-        #         info.update({f"x0_pred_mse_{tag}/Sigma{sigmas[i]:0.5f}": mse_loss[i] for i in range(len(mse_loss))})
-
-        #     info[f"{self.name}/{tag}_sample"] = wandb.Image(sample_img_fp, caption=f"{sample_counter}")
-        #     wandb.log(
-        #         info,
-        #         step=iteration,
-        #     )
+        if self.rank == 0 and wandb.run and sample_img_fp is not None:
+            sample_counter = getattr(trainer, "sample_counter", iteration)
+            data_type = "image" if model.is_image_batch(data_batch) else "video"
+            tag += f"_{data_type}"
+            info = {
+                "trainer/global_step": iteration,
+                "sample_counter": sample_counter,
+                f"{self.name}/{tag}_sample": wandb.Video(sample_img_fp, caption=f"{sample_counter}", fps=self.fps, format="mp4"),
+            }
+            if self.do_x0_prediction:
+                info[f"{self.name}/{tag}_x0"] = wandb.Image(x0_img_fp, caption=f"{sample_counter}")
+                mse_loss = mse_loss.tolist()
+                info.update({f"x0_pred_mse_{tag}/Sigma{sigmas[i]:0.5f}": mse_loss[i] for i in range(len(mse_loss))})
+            wandb.log(
+                info,
+                step=iteration,
+            )
         torch.cuda.empty_cache()
 
     @misc.timer("EveryNDrawSample: sample")
@@ -344,21 +342,13 @@ class EveryNDrawSample(EveryN):
         file_base_fp = f"{base_fp_wo_ext}.mp4"
         local_path = f"{self.local_dir}/{file_base_fp}"
 
-        if self.rank == 0 and wandb.run:
-            # if is_single_frame:  # image case
-            #     to_show = rearrange(
-            #         to_show[:, :n_viz_sample],
-            #         "n b c t h w -> t c (n h) (b w)",
-            #     )
-            #     image_grid = torchvision.utils.make_grid(to_show, nrow=1, padding=0, normalize=False)
-            #     # resize so that wandb can handle it
-            #     torchvision.utils.save_image(resize_image(image_grid, 1024), local_path, nrow=1, scale_each=True)
-            # else:
+        if self.rank == 0:
             to_show = to_show[:, 0] * 255  # [n, b, c, t, h, w]
             pred_video = to_show[0].to(torch.uint8).permute(1, 2, 3, 0).cpu().numpy()
             gt_video = to_show[-1].to(torch.uint8).permute(1, 2, 3, 0).cpu().numpy()
             video = np.concatenate([gt_video, pred_video], axis=2)
             mediapy.write_video(local_path, video, fps=self.fps)
+            log.info(f"Saved sample video to {local_path}")
 
             return local_path
         return None

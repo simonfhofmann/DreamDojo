@@ -1003,10 +1003,13 @@ class WrappedLeRobotSingleDataset(LeRobotSingleDataset):
 
         if data_split == "full":
             pass
-        elif data_split == "train":
-            self._all_steps = self._all_steps[:-len(self) // 20]
-        elif data_split == "test":
-            self._all_steps = self._all_steps[-len(self) // 20:]
+        elif data_split in ("train", "test"):
+            num_test_trajs = max(1, len(self.trajectory_ids) // 20)
+            test_traj_set = set(int(t) for t in self.trajectory_ids[-num_test_trajs:])
+            if data_split == "train":
+                self._all_steps = [step for step in self._all_steps if int(step[0]) not in test_traj_set]
+            else:
+                self._all_steps = [step for step in self._all_steps if int(step[0]) in test_traj_set]
 
     def _get_trajectories(self) -> tuple[np.ndarray, np.ndarray]:
         """Get the trajectories in the dataset."""
@@ -1084,9 +1087,9 @@ class WrappedLeRobotSingleDataset(LeRobotSingleDataset):
 
             # Just add these to fit the interface
             data["fps"] = 4
-            data["image_size"] = 256 * torch.ones(4).cuda()
+            data["image_size"] = 256 * torch.ones(4)
             data["num_frames"] = self.num_frames
-            data["padding_mask"] = torch.zeros(1, 256, 256).cuda()
+            data["padding_mask"] = torch.zeros(1, 256, 256)
             # Ensure caption key exists for online text encoding
             # Many models expect `ai_caption` when text_encoder_config.compute_online=True.
             # Default to an empty string to avoid KeyError; training configs can override upstream.

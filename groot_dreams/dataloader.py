@@ -27,6 +27,9 @@ class VideoActionDataset(torch.utils.data.Dataset):
         agibot_pad_freq10=False,
         waist_concat=False,
         single_base_index=False,
+        camera_layout="head",
+        head_crop_norm=None,
+        wrist_crop_norm=None,
     ):
         self.dataset_path = dataset_path
         self.num_frames = num_frames
@@ -35,7 +38,13 @@ class VideoActionDataset(torch.utils.data.Dataset):
         self.width = width
 
         config, train_transform, test_transform = construct_modality_config_and_transforms(
-            num_frames=(num_frames + 1), embodiment=embodiment, agibot_pad_freq10=agibot_pad_freq10, waist_concat=waist_concat
+            num_frames=(num_frames + 1),
+            embodiment=embodiment,
+            agibot_pad_freq10=agibot_pad_freq10,
+            waist_concat=waist_concat,
+            camera_layout=camera_layout,
+            head_crop_norm=head_crop_norm,
+            wrist_crop_norm=wrist_crop_norm,
         )  # Add an additional prefix frame as baseline to compute delta actions
         self.lerobot_dataset = WrappedLeRobotSingleDataset(
             dataset_path=dataset_path,
@@ -99,6 +108,9 @@ class MultiVideoActionDataset(torch.utils.data.Dataset):
         restrict_len=None,
 
         cr1_embeddings_path=None,
+        camera_layout="head",
+        head_crop_norm=None,
+        wrist_crop_norm=None,
     ):
         if args is not None:
             dataset_path = args.dataset_path
@@ -165,6 +177,9 @@ class MultiVideoActionDataset(torch.utils.data.Dataset):
                     agibot_pad_freq10=False,
                     waist_concat=False,
                     single_base_index=single_base_index,
+                    camera_layout=camera_layout,
+                    head_crop_norm=head_crop_norm,
+                    wrist_crop_norm=wrist_crop_norm,
                 ))
                 print(f"Created VideoActionDataset for {path}")
 

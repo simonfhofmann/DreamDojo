@@ -420,6 +420,11 @@ class Video2WorldInference:
                     data_batch={"ai_caption": [negative_prompt], "images": None},
                     input_caption_key="ai_caption",
                 )
+        elif os.path.exists("datasets/cr1_empty_text_embeddings.pt"):
+            emb = torch.load("datasets/cr1_empty_text_embeddings.pt", map_location="cuda")
+            data_batch["t5_text_embeddings"] = emb
+            if use_neg_prompt:
+                data_batch["neg_t5_text_embeddings"] = emb
         else:
             data_batch["t5_text_embeddings"] = get_text_embedding(prompt)
             if use_neg_prompt:

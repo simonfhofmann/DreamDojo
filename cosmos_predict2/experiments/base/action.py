@@ -92,7 +92,7 @@ _default_groot_config = LazyDict(
         checkpoint=dict(
             save_iter=10_000,
             # pyrefly: ignore  # missing-attribute
-            load_path=get_checkpoint_path(DEFAULT_CHECKPOINT.s3.uri),
+            load_path="checkpoints/DreamDojo/2B_YAM_post-train/iter_000050000/",
             # load_path="/mnt/amlfs-01/shared/shenyuang/cosmos_logs/exp1201/pretrain/checkpoints/iter_000100000/",
             load_training_state=False,
             strict_resume=False,
@@ -203,7 +203,7 @@ _default_groot_config_14b = LazyDict(
         checkpoint=dict(
             save_iter=5_000,
             # pyrefly: ignore  # missing-attribute
-            load_path=get_checkpoint_path(DEFAULT_CHECKPOINT_14B.s3.uri),
+            load_path="checkpoints/DreamDojo/2B_YAM_post-train/iter_000050000/",
             # load_path="/mnt/amlfs-01/shared/shenyuang/cosmos_logs/exp1201/pretrain/checkpoints/iter_000100000/",
             load_training_state=False,
             strict_resume=False,

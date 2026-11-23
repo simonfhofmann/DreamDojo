@@ -1,11 +1,25 @@
 from groot_dreams.data.dataset import ModalityConfig
-from groot_dreams.data.transform import VideoToTensor, VideoCrop, VideoResize
+from groot_dreams.data.transform import (
+    VideoCrop,
+    VideoNormCrop,
+    VideoResize,
+    VideoThreePanelComposite,
+    VideoToTensor,
+)
 from groot_dreams.data.transform.base import ComposedModalityTransform
 from groot_dreams.data.transform.concat import ConcatTransform
 from groot_dreams.data.transform.state_action import StateActionToTensor, StateActionTransform
 
 
-def construct_modality_config_and_transforms(num_frames, embodiment, agibot_pad_freq10=False, waist_concat=False):
+def construct_modality_config_and_transforms(
+    num_frames,
+    embodiment,
+    agibot_pad_freq10=False,
+    waist_concat=False,
+    camera_layout="head",
+    head_crop_norm=None,
+    wrist_crop_norm=None,
+):
     if embodiment == "gr1":
         timestep_interval = 2
         delta_indices = list(range(0, num_frames * timestep_interval, timestep_interval))
@@ -73,11 +87,18 @@ def construct_modality_config_and_transforms(num_frames, embodiment, agibot_pad_
     elif embodiment == "yam":
         timestep_interval = 4
         delta_indices = list(range(0, num_frames * timestep_interval, timestep_interval))
-        video_key = "video.top_camera-images-rgb"
+        if camera_layout == "three_panel":
+            video_keys = [
+                "video.top_camera-images-rgb",
+                "video.left_camera-images-rgb",
+                "video.right_camera-images-rgb",
+            ]
+        else:
+            video_keys = ["video.top_camera-images-rgb"]
         config = {
             "video": ModalityConfig(
                 delta_indices=delta_indices,
-                modality_keys=[video_key],
+                modality_keys=video_keys,
             ),
             "state": ModalityConfig(
                 delta_indices=[0],
@@ -156,52 +177,65 @@ def construct_modality_config_and_transforms(num_frames, embodiment, agibot_pad_
     video_modality, state_modality, action_modality = config["video"], config["state"], config["action"]
     height = 480
     width = 640
-    
-    train_transform = ComposedModalityTransform(
-        transforms=[
-            VideoToTensor(apply_to=video_modality.modality_keys),
-            VideoCrop(apply_to=video_modality.modality_keys),
-            VideoResize(apply_to=video_modality.modality_keys, height=height, width=width, interpolation="linear"),
 
-            StateActionToTensor(apply_to=state_modality.modality_keys),
-            StateActionTransform(apply_to=state_modality.modality_keys, normalization_modes={
-                key: "min_max" for key in state_modality.modality_keys
-            }),
+    def _build_video_transforms_and_concat_order():
+        if embodiment == "yam" and camera_layout == "head_crop":
+            crop_box = tuple(head_crop_norm) if head_crop_norm is not None else (0.25, 0.32, 0.75, 0.92)
+            v_transforms = [
+                VideoToTensor(apply_to=video_modality.modality_keys),
+                VideoNormCrop(apply_to=video_modality.modality_keys, crop_box=crop_box),
+                VideoResize(apply_to=video_modality.modality_keys, height=height, width=width, interpolation="linear"),
+            ]
+            v_concat_order = video_modality.modality_keys
+        elif embodiment == "yam" and camera_layout == "three_panel":
+            h_crop = tuple(head_crop_norm) if head_crop_norm is not None else (0.1875, 0.35, 0.8125, 0.80)
+            w_crop = tuple(wrist_crop_norm) if wrist_crop_norm is not None else (0.10, 278.0 / 1200.0, 0.90, 1.0)
+            v_transforms = [
+                VideoToTensor(apply_to=video_modality.modality_keys),
+                VideoThreePanelComposite(
+                    top_key="video.top_camera-images-rgb",
+                    left_key="video.left_camera-images-rgb",
+                    right_key="video.right_camera-images-rgb",
+                    output_key="video.top_camera-images-rgb",
+                    head_crop_norm=h_crop,
+                    wrist_crop_norm=w_crop,
+                    height=height,
+                    width=width,
+                    top_height=288,
+                ),
+            ]
+            v_concat_order = ["video.top_camera-images-rgb"]
+        else:
+            v_transforms = [
+                VideoToTensor(apply_to=video_modality.modality_keys),
+                VideoCrop(apply_to=video_modality.modality_keys),
+                VideoResize(apply_to=video_modality.modality_keys, height=height, width=width, interpolation="linear"),
+            ]
+            v_concat_order = video_modality.modality_keys
+        return v_transforms, v_concat_order
 
-            StateActionToTensor(apply_to=action_modality.modality_keys),
-            StateActionTransform(apply_to=action_modality.modality_keys, normalization_modes={
-                key: "min_max" for key in action_modality.modality_keys
-            }),
+    def _build_composed_transform():
+        v_transforms, v_concat_order = _build_video_transforms_and_concat_order()
+        return ComposedModalityTransform(
+            transforms=[
+                *v_transforms,
+                StateActionToTensor(apply_to=state_modality.modality_keys),
+                StateActionTransform(apply_to=state_modality.modality_keys, normalization_modes={
+                    key: "min_max" for key in state_modality.modality_keys
+                }),
+                StateActionToTensor(apply_to=action_modality.modality_keys),
+                StateActionTransform(apply_to=action_modality.modality_keys, normalization_modes={
+                    key: "min_max" for key in action_modality.modality_keys
+                }),
+                ConcatTransform(
+                    video_concat_order=v_concat_order,
+                    state_concat_order=state_modality.modality_keys,
+                    action_concat_order=action_modality.modality_keys,
+                ),
+            ]
+        )
 
-            ConcatTransform(
-                video_concat_order=video_modality.modality_keys,
-                state_concat_order=state_modality.modality_keys,
-                action_concat_order=action_modality.modality_keys,
-            ),
-        ]
-    )
-    test_transform = ComposedModalityTransform(
-        transforms=[
-            VideoToTensor(apply_to=video_modality.modality_keys),
-            VideoCrop(apply_to=video_modality.modality_keys),
-            VideoResize(apply_to=video_modality.modality_keys, height=height, width=width, interpolation="linear"),
-
-            StateActionToTensor(apply_to=state_modality.modality_keys),
-            StateActionTransform(apply_to=state_modality.modality_keys, normalization_modes={
-                key: "min_max" for key in state_modality.modality_keys
-            }),
-
-            StateActionToTensor(apply_to=action_modality.modality_keys),
-            StateActionTransform(apply_to=action_modality.modality_keys, normalization_modes={
-                key: "min_max" for key in action_modality.modality_keys
-            }),
-
-            ConcatTransform(
-                video_concat_order=video_modality.modality_keys,
-                state_concat_order=state_modality.modality_keys,
-                action_concat_order=action_modality.modality_keys,
-            ),
-        ]
-    )
+    train_transform = _build_composed_transform()
+    test_transform = _build_composed_transform()
 
     return config, train_transform, test_transform

@@ -4,6 +4,7 @@ import albumentations as A
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torchvision.transforms.v2 as T
 from einops import rearrange
 from pydantic import Field, PrivateAttr, field_validator
@@ -513,6 +514,20 @@ class VideoToTensor(VideoTransform):
         else:
             raise ValueError(f"Backend {self.backend} not supported")
 
+    def apply(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Convert each video key independently (supports heterogeneous camera resolutions)."""
+        self.check_input(data)
+        for key in self.apply_to:
+            arr = data[key]
+            if arr.ndim == 5:
+                b, t = arr.shape[:2]
+                flat = arr.reshape(b * t, *arr.shape[2:])
+                ten = self.to_tensor(flat)
+                data[key] = ten.reshape(b, t, *ten.shape[1:])
+            else:
+                data[key] = self.to_tensor(arr)
+        return data
+
     def check_input(self, data: dict):
         """Check if the input data has the correct shape.
         Expected video shape: [T, H, W, C], dtype np.uint8
@@ -546,6 +561,88 @@ class VideoToTensor(VideoTransform):
         """
         frames_tensor = torch.from_numpy(frames).to(torch.float32) / 255.0
         return frames_tensor.permute(0, 3, 1, 2)  # [T, C, H, W]
+
+
+class VideoNormCrop(VideoTransform):
+    """Static normalized ROI crop (x1, y1, x2, y2) in [0, 1], identical in train & eval."""
+
+    crop_box: tuple[float, float, float, float] = Field(
+        ..., description="Normalized (x1, y1, x2, y2) crop bounds in [0, 1]"
+    )
+
+    def get_transform(self, mode: Literal["train", "eval"] = "train") -> Callable:
+        if self.backend != "torchvision":
+            raise ValueError(f"Backend {self.backend} not supported")
+        x1_f, y1_f, x2_f, y2_f = self.crop_box
+
+        def _crop(frames: torch.Tensor) -> torch.Tensor:
+            h, w = frames.shape[-2:]
+            x1 = max(0, min(w - 1, int(round(x1_f * w))))
+            y1 = max(0, min(h - 1, int(round(y1_f * h))))
+            x2 = max(x1 + 1, min(w, int(round(x2_f * w))))
+            y2 = max(y1 + 1, min(h, int(round(y2_f * h))))
+            return frames[:, :, y1:y2, x1:x2]
+
+        return _crop
+
+
+class VideoThreePanelComposite(ModalityTransform):
+    """
+    On-the-fly 3-panel composite transform for single-source multi-camera datasets.
+    Packs cropped top camera (top_height x width) over side-by-side cropped left & right
+    wrist cameras ((height - top_height) x width//2 each) into a single [T, C, H, W] video
+    stored under `output_key`, popping the auxiliary wrist keys.
+    """
+
+    apply_to: list[str] = Field(default_factory=list)
+    top_key: str = Field(default="video.top_camera-images-rgb")
+    left_key: str = Field(default="video.left_camera-images-rgb")
+    right_key: str = Field(default="video.right_camera-images-rgb")
+    output_key: str = Field(default="video.top_camera-images-rgb")
+    head_crop_norm: tuple[float, float, float, float] = Field(
+        default=(0.1875, 0.35, 0.8125, 0.80)
+    )
+    wrist_crop_norm: tuple[float, float, float, float] = Field(
+        default=(0.10, 278.0 / 1200.0, 0.90, 1.0)
+    )
+    height: int = Field(default=480)
+    width: int = Field(default=640)
+    top_height: int = Field(default=288)
+
+    @staticmethod
+    def _crop_and_resize(
+        frames: torch.Tensor,
+        crop_norm: tuple[float, float, float, float],
+        out_h: int,
+        out_w: int,
+    ) -> torch.Tensor:
+        h, w = frames.shape[-2:]
+        x1_f, y1_f, x2_f, y2_f = crop_norm
+        x1 = max(0, min(w - 1, int(round(x1_f * w))))
+        y1 = max(0, min(h - 1, int(round(y1_f * h))))
+        x2 = max(x1 + 1, min(w, int(round(x2_f * w))))
+        y2 = max(y1 + 1, min(h, int(round(y2_f * h))))
+        cropped = frames[..., y1:y2, x1:x2]
+        is_batched = cropped.ndim == 5
+        if is_batched:
+            b, t, c, ch, cw = cropped.shape
+            flat = cropped.reshape(b * t, c, ch, cw)
+            resized = F.interpolate(flat, size=(out_h, out_w), mode="bilinear", align_corners=False, antialias=True)
+            return resized.reshape(b, t, c, out_h, out_w)
+        return F.interpolate(cropped, size=(out_h, out_w), mode="bilinear", align_corners=False, antialias=True)
+
+    def apply(self, data: dict[str, Any]) -> dict[str, Any]:
+        bot_h = self.height - self.top_height
+        half_w = self.width // 2
+
+        top_fr = self._crop_and_resize(data.pop(self.top_key), self.head_crop_norm, self.top_height, self.width)
+        left_fr = self._crop_and_resize(data.pop(self.left_key), self.wrist_crop_norm, bot_h, half_w)
+        right_fr = self._crop_and_resize(data.pop(self.right_key), self.wrist_crop_norm, bot_h, self.width - half_w)
+
+        bottom = torch.cat([left_fr, right_fr], dim=-1)
+        composite = torch.cat([top_fr, bottom], dim=-2)
+        data[self.output_key] = composite
+        return data
 
 
 class VideoToNumpy(VideoTransform):

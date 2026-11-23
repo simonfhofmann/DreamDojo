@@ -695,7 +695,7 @@ AC_CHUNK_MULTI_VIEW_2B_GR00T_GR1_CUSTOMIZED_13FRAME_FULL_16NODES = LazyDict(
 )
 
 default_experiment = DEFAULT_CHECKPOINT.experiment
-load_path = get_checkpoint_path(DEFAULT_CHECKPOINT.s3.uri)
+load_path = "checkpoints/DreamDojo/2B_YAM_post-train/iter_000050000/"
 ac_reason_embeddings_rectified_flow_2b_oss = LazyDict(
     dict(
         defaults=[

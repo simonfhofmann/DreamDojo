@@ -68,3 +68,17 @@ output*/
 # Launchers (internal)
 osmo_launch.py
 ray_launch.py
+
+# Local MCAP recordings & rollout artifacts
+raw_mcap/
+benchmark_mcap/
+results/
+*.mcap
+*.npy
+
+# Local MCAP recordings & rollout artifacts
+raw_mcap/
+benchmark_mcap/
+results/
+*.mcap
+*.npy

@@ -115,7 +115,12 @@ def main():
             key = key.replace("net_ema.", "net.")
             state_dict_ema_fp32[key] = value
     if not state_dict_ema_fp32:
-        raise ValueError("Model doesn't contain EMA weights")
+        print("No 'net_ema.' keys found; falling back to 'net.' weights for EMA export...")
+        for key, value in state_dict.items():
+            if key.startswith("net."):
+                state_dict_ema_fp32[key] = value
+    if not state_dict_ema_fp32:
+        raise ValueError("Model doesn't contain EMA or net weights")
     torch.save(state_dict_ema_fp32, pt_ema_fp32_path)
     print(f"Saved EMA fp32 weights from '{pt_path}' to '{pt_ema_fp32_path}'")
 
