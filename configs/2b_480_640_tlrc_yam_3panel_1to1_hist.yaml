@@ -1,0 +1,113 @@
+job:
+  project: dreamdojo
+  group: tlrc_yam_finetune
+  name: tlrc_bimanual_yam_3panel_1to1_hist
+
+checkpoint:
+  save_iter: 1000
+  # Default to clean public base checkpoint (free of pre-fix timestamp drift & old crop bias).
+  # On H100/A100 (80GB), you can also pass: dataloader_train.batch_size=8 trainer.grad_accum_iter=1
+  load_path: checkpoints/DreamDojo/2B_YAM_post-train/iter_000050000/
+  load_training_state: false
+  strict_resume: false
+  dcp_async_mode_enabled: false
+
+optimizer:
+  lr: 1.0e-4
+  weight_decay: 0.01
+
+# Flat LR after 200-step warmup: LR decays ONLY when deterministic val MSE on eval6 plateaus
+scheduler:
+  warm_up_steps: [200]
+  cycle_lengths: [10000000]
+  f_start: [1.0e-2]
+  f_max: [1.0]
+  f_min: [1.0]
+
+trainer:
+  max_iter: 12000
+  logging_iter: 10
+  grad_accum_iter: 4
+  run_validation: true
+  run_validation_on_start: true
+  validation_iter: 250
+  callbacks:
+    every_n_sample_reg:
+      every_n: 500
+      run_at_start: false
+      do_x0_prediction: false
+      guidance: [0]
+      fps: 7
+    every_n_sample_ema:
+      every_n: 500000
+      run_at_start: false
+      fps: 7
+    plateau_lr_early_stop:
+      _target_: cosmos_predict2._src.predict2.callbacks.plateau_lr_early_stop.PlateauLRAndEarlyStopping
+      sigmas: [0.2, 0.5, 0.8]
+      max_eval_batches: 24
+      seed: 10000
+      lr_factor: 0.5
+      lr_patience: 3
+      cooldown: 2
+      min_lr: 6.25e-6
+      early_stop_patience: 3
+      min_delta: 0.0002
+      warmup_skip_iters: 250
+
+model_parallel:
+  context_parallel_size: 1
+
+model:
+  config:
+    ema:
+      enabled: false
+    text_encoder_config:
+      compute_online: false
+    use_lora: true
+    lora_rank: 32
+    lora_alpha: 32
+    lora_target_modules: "q_proj,k_proj,v_proj,output_proj,mlp.layer1,mlp.layer2,fc1,fc2"
+    lora_unfreeze_modules: "action_embedder,adaln_modulation,t_embedder,t_embedding_norm,final_layer"
+    init_lora_weights: true
+    cond_frame_noise_std: 0.05
+    min_num_conditional_frames: 1
+    max_num_conditional_frames: 2
+    conditional_frames_probs:
+      1: 0.25
+      2: 0.75
+    state_t: 5  # 1 + 16 // 4 (5 history frames = 2 latents + 12 predicted frames = 3 latents)
+    net:
+      action_dim: 384
+      temporal_compression_ratio: 4
+      num_action_per_chunk: 16
+      zero_init_action_embedder: false
+      sac_config:
+        mode: "block_wise"
+
+dataloader_train:
+  batch_size: 2
+  num_workers: 4
+  dataset:
+    num_frames: 17
+    dataset_path:
+      - datasets/tlrc_bimanual_yam_multicam
+    data_split: full
+    camera_layout: three_panel_1to1
+    cr1_embeddings_path: datasets/cr1_empty_text_embeddings.pt
+    single_base_index: false
+    deterministic_uniform_sampling: false
+
+dataloader_val:
+  batch_size: 1
+  num_workers: 2
+  dataset:
+    num_frames: 17
+    dataset_path:
+      - datasets/tlrc_bimanual_yam_eval6
+    data_split: full
+    camera_layout: three_panel_1to1
+    restrict_len: 24
+    cr1_embeddings_path: datasets/cr1_empty_text_embeddings.pt
+    single_base_index: false
+    deterministic_uniform_sampling: false

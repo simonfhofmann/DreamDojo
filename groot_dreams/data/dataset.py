@@ -1075,7 +1075,7 @@ class WrappedLeRobotSingleDataset(LeRobotSingleDataset):
             if "annotation.human.coarse_action" in original_outputs:
                 text = original_outputs["annotation.human.coarse_action"][0].split(":")[-1].strip()
 
-            key = action_seq[0:1, :29]
+            key = action_seq[0:1, :29].clone()
             key[:, :min(original_outputs["state"].shape[1], 29)] = original_outputs["state"][:, :29]
 
             data = {

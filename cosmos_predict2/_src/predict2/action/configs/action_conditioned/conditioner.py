@@ -106,8 +106,8 @@ class Video2WorldCondition(Text2WorldCondition):
                 num_conditional_frames_B = torch.ones(B, dtype=torch.int32) * num_conditional_frames
             elif conditional_frames_probs is not None:
                 # Use weighted sampling based on provided probabilities
-                frames_options = list(conditional_frames_probs.keys())
-                weights = list(conditional_frames_probs.values())
+                frames_options = [int(k) for k in conditional_frames_probs.keys()]
+                weights = [float(v) for v in conditional_frames_probs.values()]
                 num_conditional_frames_B = torch.tensor(
                     random.choices(frames_options, weights=weights, k=B), dtype=torch.int32
                 )

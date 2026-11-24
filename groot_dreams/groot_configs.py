@@ -87,7 +87,7 @@ def construct_modality_config_and_transforms(
     elif embodiment == "yam":
         timestep_interval = 4
         delta_indices = list(range(0, num_frames * timestep_interval, timestep_interval))
-        if camera_layout == "three_panel":
+        if camera_layout in ("three_panel", "three_panel_1to1"):
             video_keys = [
                 "video.top_camera-images-rgb",
                 "video.left_camera-images-rgb",
@@ -187,9 +187,15 @@ def construct_modality_config_and_transforms(
                 VideoResize(apply_to=video_modality.modality_keys, height=height, width=width, interpolation="linear"),
             ]
             v_concat_order = video_modality.modality_keys
-        elif embodiment == "yam" and camera_layout == "three_panel":
-            h_crop = tuple(head_crop_norm) if head_crop_norm is not None else (0.1875, 0.35, 0.8125, 0.80)
-            w_crop = tuple(wrist_crop_norm) if wrist_crop_norm is not None else (0.10, 278.0 / 1200.0, 0.90, 1.0)
+        elif embodiment == "yam" and camera_layout in ("three_panel", "three_panel_1to1"):
+            if camera_layout == "three_panel_1to1":
+                default_h_crop = (0.25, 0.44, 0.75, 0.80)  # Exact 640x288 1:1 slice from 1280x800
+                default_w_crop = (0.25, 0.40, 0.75, 0.88)  # Exact 320x192 1:1 slice from 640x400
+            else:
+                default_h_crop = (0.1875, 0.35, 0.8125, 0.80)
+                default_w_crop = (0.10, 278.0 / 1200.0, 0.90, 1.0)
+            h_crop = tuple(head_crop_norm) if head_crop_norm is not None else default_h_crop
+            w_crop = tuple(wrist_crop_norm) if wrist_crop_norm is not None else default_w_crop
             v_transforms = [
                 VideoToTensor(apply_to=video_modality.modality_keys),
                 VideoThreePanelComposite(

@@ -90,7 +90,18 @@ class PlateauLRAndEarlyStopping(Callback):
 
         x0 = output_batch["x0"].detach()
         condition = output_batch["condition"]
-        B = x0.shape[0]
+        B, _, T_lat, _, _ = x0.shape
+        # Enforce deterministic conditioning frame count during validation:
+        # 2 latent frames (5 pixel frames) when state_t >= 5 and max_num_conditional_frames >= 2, else 1.
+        max_cond = getattr(model.config, "max_num_conditional_frames", 1)
+        val_num_cond = 2 if (T_lat >= 5 and max_cond >= 2) else 1
+        if hasattr(condition, "set_video_condition"):
+            condition = condition.set_video_condition(
+                gt_frames=x0,
+                random_min_num_conditional_frames=val_num_cond,
+                random_max_num_conditional_frames=val_num_cond,
+                num_conditional_frames=val_num_cond,
+            )
 
         batch_mse_sum = 0.0
         for s_idx, sigma_val in enumerate(self.sigmas):
@@ -109,8 +120,8 @@ class PlateauLRAndEarlyStopping(Callback):
                     timesteps_B_T=timestep_t,
                     condition=condition,
                 )
-            # Evaluate on future latent frames (excluding clean Frame 0)
-            mse = torch.mean((vt_pred[:, :, 1:].float() - vt[:, :, 1:].float()) ** 2).item()
+            # Evaluate on future latent frames (excluding clean conditioning frames)
+            mse = torch.mean((vt_pred[:, :, val_num_cond:].float() - vt[:, :, val_num_cond:].float()) ** 2).item()
             batch_mse_sum += mse
 
         mean_batch_mse = batch_mse_sum / len(self.sigmas)

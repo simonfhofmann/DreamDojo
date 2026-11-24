@@ -623,6 +623,8 @@ class VideoThreePanelComposite(ModalityTransform):
         x2 = max(x1 + 1, min(w, int(round(x2_f * w))))
         y2 = max(y1 + 1, min(h, int(round(y2_f * h))))
         cropped = frames[..., y1:y2, x1:x2]
+        if cropped.shape[-2] == out_h and cropped.shape[-1] == out_w:
+            return cropped
         is_batched = cropped.ndim == 5
         if is_batched:
             b, t, c, ch, cw = cropped.shape

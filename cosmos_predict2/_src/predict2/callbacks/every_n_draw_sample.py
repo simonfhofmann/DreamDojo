@@ -271,6 +271,20 @@ class EveryNDrawSample(EveryN):
     def sample(self, trainer, model, data_batch, output_batch, loss, iteration):
         tag = "ema" if self.is_ema else "reg"
 
+        # Slice a single sample (B=1) for visualization so generate_samples_from_batch
+        # works identically regardless of training micro-batch size (e.g. batch_size=2).
+        b_size = data_batch[model.input_data_key].shape[0] if model.input_data_key in data_batch else 1
+        if b_size > 1:
+            sample_batch = {}
+            for k, v in data_batch.items():
+                if isinstance(v, torch.Tensor) and v.ndim > 0 and v.shape[0] == b_size:
+                    sample_batch[k] = v[:1]
+                elif isinstance(v, list) and len(v) == b_size:
+                    sample_batch[k] = v[:1]
+                else:
+                    sample_batch[k] = v
+            data_batch = sample_batch
+
         # Obtain text embeddings online
         text_encoder_config = getattr(model.config, "text_encoder_config", None)
         if text_encoder_config is not None and text_encoder_config.compute_online:
