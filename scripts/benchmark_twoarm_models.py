@@ -422,7 +422,7 @@ def run_benchmark(
                 ])
                 panels_by_t.append(np.vstack([top_row, bot_row]))
             out_mp4 = save_dir / f"twoarm_ep{eid:02d}_all6_shared_roi.mp4"
-            mediapy.write_video(str(out_mp4), np.stack(panels_by_t, axis=0), fps=10)
+            mediapy.write_video(str(out_mp4), np.stack(panels_by_t, axis=0), fps=7.5)
             print(f"Saved 6-panel comparison video -> {out_mp4}")
 
             # Also render native 3-panel comparison [GT | Exp2-4k | Exp2-Stg2]
@@ -441,7 +441,7 @@ def run_benchmark(
                 axis=0,
             )
             out_3p = save_dir / f"twoarm_ep{eid:02d}_3panel_stg1_vs_stg2.mp4"
-            mediapy.write_video(str(out_3p), trip, fps=10)
+            mediapy.write_video(str(out_3p), trip, fps=7.5)
             print(f"Saved 3-panel comparison video -> {out_3p}")
 
 

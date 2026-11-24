@@ -432,12 +432,12 @@ def run_counterfactual_and_chunk_rollouts(
                     [gt_video, rollout_videos["gt"], rollout_videos["zero"], rollout_videos["negated"]], axis=2
                 )
                 out_path = save_root / f"ep20_clip{clip_i:02d}_counterfactual_4panel.mp4"
-                mediapy.write_video(str(out_path), panel_video, fps=10)
+                mediapy.write_video(str(out_path), panel_video, fps=7.5)
                 print(f"Saved 4-panel counterfactual video [GT | True | Zero | Negated] -> {out_path}")
             else:
                 panel_video = np.concatenate([gt_video, rollout_videos["gt"]], axis=2)
                 out_path = save_root / f"ep20_clip{clip_i:02d}_gt_vs_pred.mp4"
-                mediapy.write_video(str(out_path), panel_video, fps=10)
+                mediapy.write_video(str(out_path), panel_video, fps=7.5)
                 print(f"Saved 2-panel rollout video [GT | True] -> {out_path}")
 
         print("\n" + "=" * 80)

@@ -285,29 +285,29 @@ def decode_and_rectify_video(
     out_w: int = 640,
     out_h: int = 480,
 ) -> Tuple[List[np.ndarray], np.ndarray]:
-    """Decodes H.264 packets via PyAV, rectifies/crops, and downsamples to target_fps."""
-    codec = av.CodecContext.create("h264", "r")
-    raw_frames = []
-    frame_times = []
+    """
+    Decodes H.264 packets via PyAV, rectifies/crops, and resamples onto an exact
+    uniform target_fps time grid (t_start + k / target_fps) by nearest real MCAP
+    timestamp. This prevents cumulative clock/frame-drop drift between MP4 PTS
+    (k / target_fps) and parquet timestamps/actions.
+    """
+    del source_fps  # Unused: resampling is driven directly by exact MCAP log_time timestamps
+    if not video_packets:
+        return [], np.array([], dtype=np.float64)
 
-    downsample_factor = max(1, round(source_fps / target_fps))
-    raw_count = 0
+    t_start = float(video_packets[0][0])
+    t_end = float(video_packets[-1][0])
+    n_targets = max(1, int(np.floor((t_end - t_start) * float(target_fps))) + 1)
+    target_times = t_start + np.arange(n_targets, dtype=np.float64) / float(target_fps)
 
-    for t_sec, packet_bytes in video_packets:
-        packets = codec.parse(packet_bytes)
-        for pkt in packets:
-            for av_frame in codec.decode(pkt):
-                if raw_count % downsample_factor == 0:
-                    bgr = av_frame.to_ndarray(format="bgr24")
-                    if rectifier is not None:
-                        processed = rectifier.process(bgr, out_w=out_w, out_h=out_h)
-                    else:
-                        processed = cv2.resize(bgr, (out_w, out_h), interpolation=cv2.INTER_AREA)
-                    raw_frames.append(processed)
-                    frame_times.append(t_sec)
-                raw_count += 1
-
-    return raw_frames, np.array(frame_times)
+    frames, _ = decode_and_sync_wrist_video(
+        video_packets,
+        rectifier,
+        target_times=target_times,
+        out_w=out_w,
+        out_h=out_h,
+    )
+    return frames, target_times
 
 
 def decode_and_sync_wrist_video(
@@ -543,7 +543,7 @@ def _convert_single_episode(
     df = pd.DataFrame({
         "observation.state": [row for row in state_arr],
         "action": [row for row in action_arr],
-        "timestamp": frame_times - frame_times[0],
+        "timestamp": np.arange(n_frames, dtype=np.float64) / float(fps),
         "frame_index": np.arange(n_frames),
         "episode_index": ep_idx,
         "task_index": ep_idx,
