@@ -84,6 +84,8 @@ class VideoActionDataset(torch.utils.data.Dataset):
             "image_size": lerobot_data["image_size"],
             "ai_caption": lerobot_data["ai_caption"],
         }
+        if "robot_q" in lerobot_data:
+            data["robot_q"] = lerobot_data["robot_q"]
         return data
 
     def __len__(self):

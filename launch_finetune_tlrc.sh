@@ -6,7 +6,13 @@ NPROC=${NPROC:-1}
 MASTER_ADDR=${MASTER_ADDR:-localhost}
 MASTER_PORT=${MASTER_PORT:-12341}
 NODE_RANK=${NODE_RANK:-0}
-WANDB_MODE=${WANDB_MODE:-online}
+if [[ -z "${WANDB_MODE:-}" ]]; then
+  if [[ -n "${WANDB_API_KEY:-}" ]] || { [[ -f "${HOME}/.netrc" ]] && grep -q "api.wandb.ai" "${HOME}/.netrc" 2>/dev/null; }; then
+    WANDB_MODE="online"
+  else
+    WANDB_MODE="offline"
+  fi
+fi
 
 export TORCH_NCCL_ENABLE_MONITORING=0
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800

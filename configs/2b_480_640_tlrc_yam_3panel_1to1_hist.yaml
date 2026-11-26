@@ -74,6 +74,7 @@ model:
     min_num_conditional_frames: 1
     max_num_conditional_frames: 2
     conditional_frames_probs:
+      0: 0.0
       1: 0.25
       2: 0.75
     state_t: 5  # 1 + 16 // 4 (5 history frames = 2 latents + 12 predicted frames = 3 latents)

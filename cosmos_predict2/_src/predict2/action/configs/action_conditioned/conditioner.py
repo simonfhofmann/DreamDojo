@@ -220,6 +220,7 @@ class Video2WorldConditionerV2(GeneralConditioner):
 @dataclass(frozen=True)
 class ActionConditionedCondition(Video2WorldCondition):
     action: Optional[torch.Tensor] = None
+    robot_q: Optional[torch.Tensor] = None
 
 
 class ActionConditionedConditioner(Video2WorldConditioner):
@@ -231,6 +232,8 @@ class ActionConditionedConditioner(Video2WorldConditioner):
         output = super()._forward(batch, override_dropout_rate)
         assert "action" in batch, "ActionConditionalConditioner requires 'action' in batch"
         output["action"] = batch["action"]
+        if "robot_q" in batch and batch["robot_q"] is not None:
+            output["robot_q"] = batch["robot_q"]
         return ActionConditionedCondition(**output)
 
 

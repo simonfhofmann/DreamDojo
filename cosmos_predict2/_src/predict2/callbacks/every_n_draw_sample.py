@@ -15,6 +15,7 @@
 
 import math
 import os
+import shutil
 from contextlib import nullcontext
 from functools import partial
 from typing import List, Optional
@@ -361,8 +362,20 @@ class EveryNDrawSample(EveryN):
             pred_video = to_show[0].to(torch.uint8).permute(1, 2, 3, 0).cpu().numpy()
             gt_video = to_show[-1].to(torch.uint8).permute(1, 2, 3, 0).cpu().numpy()
             video = np.concatenate([gt_video, pred_video], axis=2)
-            mediapy.write_video(local_path, video, fps=self.fps)
-            log.info(f"Saved sample video to {local_path}")
+            if shutil.which("ffmpeg") is None:
+                try:
+                    import imageio_ffmpeg
 
-            return local_path
+                    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+                    if ffmpeg_exe and os.path.isfile(ffmpeg_exe):
+                        mediapy.set_ffmpeg(ffmpeg_exe)
+                except Exception:
+                    pass
+            try:
+                mediapy.write_video(local_path, video, fps=self.fps)
+                log.info(f"Saved sample video to {local_path}")
+                return local_path
+            except Exception as e:
+                log.warning(f"Failed to save sample video to {local_path} (continuing training): {e}")
+                return None
         return None

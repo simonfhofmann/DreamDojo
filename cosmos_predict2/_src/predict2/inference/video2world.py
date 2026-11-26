@@ -372,6 +372,7 @@ class Video2WorldInference:
         camera: torch.Tensor | None = None,
         action: torch.Tensor | None = None,
         lam_video: torch.Tensor | None = None,
+        robot_q: torch.Tensor | None = None,
     ):
         """
         Prepares the input data batch for the diffusion model.
@@ -404,6 +405,8 @@ class Video2WorldInference:
             "num_conditional_frames": num_conditional_frames,  # Specify number of conditional frames
             "lam_video": lam_video.unsqueeze(0) if lam_video is not None else None,
         }
+        if robot_q is not None:
+            data_batch["robot_q"] = robot_q.unsqueeze(0) if robot_q.ndim == 2 else robot_q
 
         if use_neg_prompt:
             assert negative_prompt is not None, "Negative prompt is required when use_neg_prompt is True"
@@ -430,10 +433,13 @@ class Video2WorldInference:
             if use_neg_prompt:
                 data_batch["neg_t5_text_embeddings"] = get_text_embedding(negative_prompt)
 
-        # Move tensors to GPU and convert to bfloat16 if they are floating point
+        # Move tensors to GPU and convert to bfloat16 if they are floating point (keep robot_q in fp32 for exact FK)
         for k, v in data_batch.items():
             if isinstance(v, torch.Tensor) and torch.is_floating_point(data_batch[k]):
-                data_batch[k] = v.cuda().to(dtype=torch.bfloat16)
+                if k == "robot_q":
+                    data_batch[k] = v.cuda().to(dtype=torch.float32)
+                else:
+                    data_batch[k] = v.cuda().to(dtype=torch.bfloat16)
 
         return data_batch
 
@@ -453,6 +459,7 @@ class Video2WorldInference:
         action: torch.Tensor | None = None,
         num_steps: int = 35,
         lam_video: torch.Tensor | None = None,
+        robot_q: torch.Tensor | None = None,
     ):
         """
         Generates a video based on an input image or video and text prompt.
@@ -539,6 +546,7 @@ class Video2WorldInference:
             negative_prompt=negative_prompt,
             use_neg_prompt=True,
             lam_video=lam_video,
+            robot_q=robot_q,
         )
 
         mem_bytes = torch.cuda.memory_allocated(device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))

@@ -27,3 +27,25 @@ try:
 except ImportError:
     # Coverage not installed, skip
     pass
+
+# Fallback to imageio-ffmpeg's bundled binary when system `ffmpeg` is absent
+# (e.g., minimal HPC Apptainer containers). On workstations with system `ffmpeg`,
+# this is a fast no-op and the system binary is preferred.
+try:
+    import os as _os
+    import shutil as _shutil
+
+    if _shutil.which("ffmpeg") is None:
+        import imageio_ffmpeg as _imageio_ffmpeg
+
+        _ffmpeg_exe = _imageio_ffmpeg.get_ffmpeg_exe()
+        if _ffmpeg_exe and _os.path.isfile(_ffmpeg_exe):
+            _os.environ.setdefault("IMAGEIO_FFMPEG_EXE", _ffmpeg_exe)
+            try:
+                import mediapy as _mediapy
+
+                _mediapy.set_ffmpeg(_ffmpeg_exe)
+            except ImportError:
+                pass
+except Exception:
+    pass

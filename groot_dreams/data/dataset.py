@@ -1085,6 +1085,23 @@ class WrappedLeRobotSingleDataset(LeRobotSingleDataset):
                 "lam_video": lam_frames,
             }
 
+            if (
+                "yam" in str(self.dataset_path).lower()
+                and self.curr_traj_data is not None
+                and "observation.state" in self.curr_traj_data.columns
+            ):
+                from groot_dreams.geometry.dkx_kinematics import extract_robot_q_from_yam_state
+
+                first_vid_key = self.modality_keys["video"][0]
+                traj_idx = self.get_trajectory_index(trajectory_id)
+                max_len = int(self.trajectory_lengths[traj_idx])
+                step_indices = np.clip(self.delta_indices[first_vid_key] + base_index, 0, max_len - 1)
+                # Match `frames = frames[:, 1:, :, :]` (drop index 0 action baseline)
+                kept_indices = step_indices[1:]
+                raw_states = np.stack(self.curr_traj_data["observation.state"].iloc[kept_indices].values, axis=0)
+                if raw_states.shape[-1] >= 46:
+                    data["robot_q"] = torch.from_numpy(extract_robot_q_from_yam_state(raw_states)).float()
+
             # Just add these to fit the interface
             data["fps"] = 4
             data["image_size"] = 256 * torch.ones(4)

@@ -96,6 +96,22 @@ MODEL_SPECS = [
         "num_cond_latents": 2,
         "init_5frame_history": True,
     },
+    {
+        "id": "7_exp3_ctrl9k",
+        "label": "Exp3 Ctrl (+3k)",
+        "experiment": "dreamdojo_2b_480_640_tlrc_yam_3panel_1to1_hist_ctrl9k",
+        "camera_layout": "three_panel_1to1",
+        "ckpt_path": "outputs/dreamdojo/tlrc_yam_finetune/tlrc_bimanual_yam_3panel_1to1_hist_ctrl9k/checkpoints/best/model_ema_bf16.pt",
+        "num_cond_latents": 2,
+    },
+    {
+        "id": "8_exp4a_epipolar",
+        "label": "Exp4a Epipolar(+3k)",
+        "experiment": "dreamdojo_2b_480_640_tlrc_yam_3panel_1to1_hist_epipolar_4a",
+        "camera_layout": "three_panel_1to1",
+        "ckpt_path": "outputs/dreamdojo/tlrc_yam_finetune/tlrc_bimanual_yam_3panel_1to1_hist_epipolar_4a/checkpoints/best/model_ema_bf16.pt",
+        "num_cond_latents": 2,
+    },
 ]
 
 
@@ -226,6 +242,109 @@ def compute_video_metrics(
     }
 
 
+def compute_crossview_3d_consistency(
+    gt_thwc: np.ndarray,
+    pr_thwc: np.ndarray,
+    robot_q_t14: np.ndarray,
+    camera_layout: str = "three_panel_1to1",
+    patch_radius: int = 4,
+) -> Dict:
+    """
+    Evaluate 3D multi-view consistency across (head, left_wrist, right_wrist) using exact DKX FK + K_panel.
+    For every generated frame t in 1..T-1, projects 8 distal bimanual link keypoints + 9 tabletop points
+    into all 3 panels. Wherever a 3D point is cleanly visible in >= 2 panels (z > 0.08 m, >=12 px margin):
+      - `worst_view_l1`: max 9x9 patch L1 error vs GT across the co-visible views (penalizes single-view divergence)
+      - `pair_agree_err`: |mean_rgb_diff(pred_a, pred_b) - mean_rgb_diff(gt_a, gt_b)| (photometric consistency error)
+    Reports All frames, Chunks 1-2 (frames 1..24), and Chunks 3-4 long-horizon (frames 25..48).
+    """
+    from groot_dreams.geometry.dkx_kinematics import DKXKinematics
+
+    kin = DKXKinematics(camera_layout=camera_layout)
+    q_t = torch.from_numpy(robot_q_t14).float()
+    poses = kin.forward_kinematics(q_t)
+    c2w = kin.compute_camera_poses(q_t)  # [T, 3, 4, 4]
+
+    kp_names = (
+        "left_tool0",
+        "right_tool0",
+        "left_link6-7",
+        "right_link6-7",
+        "left_link5-6",
+        "right_link5-6",
+        "left_finger_left",
+        "right_finger_left",
+    )
+    kp_pts = torch.stack([poses[k][:, :3, 3] for k in kp_names], dim=1)  # [T, 8, 3]
+    table_pts = torch.tensor(
+        [[x, y, 0.02] for x in (0.20, 0.35, 0.50) for y in (-0.20, 0.0, 0.20)],
+        dtype=torch.float32,
+    )[None].expand(q_t.shape[0], -1, -1)
+    all_pts = torch.cat([kp_pts, table_pts], dim=1)  # [T, 17, 3]
+
+    # Panel crop regions in (480, 640) canvas: (y0, x0, h, w)
+    panel_boxes = [(0, 0, 288, 640), (288, 0, 192, 320), (288, 320, 192, 320)]
+    margin = max(12, patch_radius + 2)
+
+    gt_f = gt_thwc.astype(np.float32) / 255.0
+    pr_f = pr_thwc.astype(np.float32) / 255.0
+
+    buckets: Dict[str, Dict[str, List[float]]] = {
+        "all": {"worst_l1": [], "pair_err": []},
+        "chk12": {"worst_l1": [], "pair_err": []},
+        "chk34": {"worst_l1": [], "pair_err": []},
+    }
+
+    T = min(gt_thwc.shape[0], pr_thwc.shape[0], q_t.shape[0])
+    for t in range(1, T):
+        uv_list = []
+        z_list = []
+        for cam_idx in range(3):
+            uv, z = kin.project_points_to_panel(all_pts[t], c2w[t, cam_idx], cam_idx=cam_idx)
+            uv_list.append(uv.numpy())
+            z_list.append(z.numpy())
+
+        bkey = "chk12" if t <= 24 else "chk34"
+        for p_idx in range(all_pts.shape[1]):
+            vis_views = []
+            for cam_idx in range(3):
+                u, v = uv_list[cam_idx][p_idx]
+                z = z_list[cam_idx][p_idx]
+                y0, x0, ph, pw = panel_boxes[cam_idx]
+                if z > 0.08 and margin <= u < (pw - margin) and margin <= v < (ph - margin):
+                    cy = y0 + int(round(v))
+                    cx = x0 + int(round(u))
+                    r = patch_radius
+                    p_gt = gt_f[t, cy - r : cy + r + 1, cx - r : cx + r + 1]
+                    p_pr = pr_f[t, cy - r : cy + r + 1, cx - r : cx + r + 1]
+                    vis_views.append((p_gt, p_pr))
+            if len(vis_views) < 2:
+                continue
+            view_l1s = [float(np.mean(np.abs(pg - pp))) for pg, pp in vis_views]
+            worst_l1 = max(view_l1s)
+            buckets["all"]["worst_l1"].append(worst_l1)
+            buckets[bkey]["worst_l1"].append(worst_l1)
+            for a in range(len(vis_views)):
+                for b in range(a + 1, len(vis_views)):
+                    gt_diff = float(np.mean(np.abs(vis_views[a][0].mean(axis=(0, 1)) - vis_views[b][0].mean(axis=(0, 1)))))
+                    pr_diff = float(np.mean(np.abs(vis_views[a][1].mean(axis=(0, 1)) - vis_views[b][1].mean(axis=(0, 1)))))
+                    perr = abs(pr_diff - gt_diff)
+                    buckets["all"]["pair_err"].append(perr)
+                    buckets[bkey]["pair_err"].append(perr)
+
+    def _mean(xs: List[float]) -> float:
+        return float(np.mean(xs)) if xs else 0.0
+
+    return {
+        "worst_view_l1_all": _mean(buckets["all"]["worst_l1"]),
+        "worst_view_l1_chk12": _mean(buckets["chk12"]["worst_l1"]),
+        "worst_view_l1_chk34": _mean(buckets["chk34"]["worst_l1"]),
+        "pair_agree_err_all": _mean(buckets["all"]["pair_err"]),
+        "pair_agree_err_chk12": _mean(buckets["chk12"]["pair_err"]),
+        "pair_agree_err_chk34": _mean(buckets["chk34"]["pair_err"]),
+        "num_pairs_chk34": len(buckets["chk34"]["pair_err"]),
+    }
+
+
 def label_frame(img: np.ndarray, text: str) -> np.ndarray:
     out = img.copy()
     cv2.rectangle(out, (0, 0), (out.shape[1], 24), (0, 0, 0), -1)
@@ -307,6 +426,7 @@ def run_benchmark(
             cr1_embeddings_path="datasets/cr1_empty_text_embeddings.pt",
         )
         ds_hist5 = None
+        hist5_step_to_idx: Dict[Tuple[int, int], int] = {}
         if init_5f:
             ds_hist5 = MultiVideoActionDataset(
                 num_frames=5,
@@ -315,6 +435,11 @@ def run_benchmark(
                 camera_layout=layout,
                 cr1_embeddings_path="datasets/cr1_empty_text_embeddings.pt",
             )
+            le_hist5 = ds_hist5.datasets[0].lerobot_dataset
+            hist5_step_to_idx = {
+                (int(t), int(b_idx)): idx for idx, (t, b_idx) in enumerate(le_hist5.all_steps)
+            }
+        le_main = ds.datasets[0].lerobot_dataset
 
         if not all_cached:
             print(
@@ -338,18 +463,40 @@ def run_benchmark(
             model_req_actions = 4 * (model_state_t - 1)     # 12 for state_t=4, 16 for state_t=5
 
             for ds_idx, eid, desc in chosen_clips:
+                from groot_dreams.geometry.dkx_kinematics import DKXKinematics, build_rollout_robot_q
+
                 data = ds[ds_idx]
                 gt_video = data["video"].permute(1, 2, 3, 0).numpy()  # (T, 480, 640, 3) uint8
                 np.save(model_dir / f"ep{eid:02d}_gt_ref.npy", gt_video)
                 base_actions = data["action"][: num_frames - 1].numpy()
+                base_robot_q = data["robot_q"][:num_frames].numpy() if "robot_q" in data else None
+                if base_robot_q is not None:
+                    np.save(model_dir / f"ep{eid:02d}_robot_q.npy", base_robot_q)
 
+                kin_limits = DKXKinematics() if base_robot_q is not None else None
                 hist_prefix_frames = None
                 hist_prefix_actions = None
-                if init_5f and ds_hist5 is not None and ds_idx >= 16:
-                    # 4 model steps = 16 raw 30Hz steps prior to ds_idx
-                    h_data = ds_hist5[ds_idx - 16]
-                    hist_prefix_frames = h_data["video"].transpose(0, 1)  # (5, C, H, W) uint8
-                    hist_prefix_actions = h_data["action"][:4].numpy()     # (4, 384)
+                hist_prefix_robot_q = None
+                if init_5f and ds_hist5 is not None:
+                    traj_id, base_idx = le_main.all_steps[ds_idx]
+                    hist_key = (int(traj_id), int(base_idx) - 16)
+                    hist_idx = hist5_step_to_idx.get(hist_key)
+                    if hist_idx is not None:
+                        # 4 model steps = 16 raw 30Hz steps prior to (traj_id, base_idx)
+                        h_data = ds_hist5[hist_idx]
+                        hist_prefix_frames = h_data["video"].transpose(0, 1)  # (5, C, H, W) uint8
+                        hist_prefix_actions = h_data["action"][:4].numpy()     # (4, 384)
+                        if "robot_q" in h_data:
+                            hist_prefix_robot_q = h_data["robot_q"][:5].numpy()  # (5, 14)
+                        last_hist_hwc = hist_prefix_frames[-1].permute(1, 2, 0).numpy()
+                        if not np.array_equal(last_hist_hwc, gt_video[0]):
+                            max_diff = int(np.max(np.abs(last_hist_hwc.astype(np.int16) - gt_video[0].astype(np.int16))))
+                            print(
+                                f"  WARNING: ep{eid:02d} hist5[-1] vs gt_video[0] max pixel diff={max_diff} "
+                                f"(traj={traj_id}, base={base_idx}, hist_idx={hist_idx})"
+                            )
+                    else:
+                        print(f"  WARNING: ep{eid:02d} missing 5f history key {hist_key}; falling back to 1-frame init")
 
                 for mode in modes:
                     out_npy = model_dir / f"ep{eid:02d}_{mode}.npy"
@@ -361,12 +508,22 @@ def run_benchmark(
                     elif mode == "negated":
                         actions[:, 101:147] = -actions[:, 101:147]
 
+                    rollout_robot_q = None
+                    if base_robot_q is not None:
+                        rollout_robot_q = build_rollout_robot_q(
+                            base_robot_q,
+                            mode=mode,
+                            joint_lower=kin_limits.joint_lower_14.numpy(),
+                            joint_upper=kin_limits.joint_upper_14.numpy(),
+                        )
+
                     rollout_frames_u8: List[np.ndarray] = [gt_video[0]]
                     for c_idx in range(num_chunks):
                         i = c_idx * chunk_size
                         use_2lat = (num_cond_latents >= 2 and model_state_t >= 5) and (
                             c_idx > 0 or hist_prefix_frames is not None
                         )
+                        q_slice = None
                         if not use_2lat:
                             # 1-frame conditioning (1 latent frame)
                             cond_u8 = rollout_frames_u8[-1]  # (H, W, C) uint8
@@ -380,6 +537,11 @@ def run_benchmark(
                             if len(act_slice) < model_req_actions:
                                 pad_a = np.zeros((model_req_actions - len(act_slice), actions.shape[1]), dtype=actions.dtype)
                                 act_slice = np.concatenate([act_slice, pad_a], axis=0)
+                            if rollout_robot_q is not None:
+                                q_slice = rollout_robot_q[i : i + model_req_frames]
+                                if len(q_slice) < model_req_frames:
+                                    pad_q = np.repeat(q_slice[-1:], model_req_frames - len(q_slice), axis=0)
+                                    q_slice = np.concatenate([q_slice, pad_q], axis=0)
                             cur_cond_latents = 1
                             keep_start = 1
                             keep_end = 1 + chunk_size
@@ -393,10 +555,20 @@ def run_benchmark(
                                 elif mode == "negated":
                                     h_act[:, 101:147] = -h_act[:, 101:147]
                                 act_slice = np.concatenate([h_act, actions[i : i + chunk_size]], axis=0)  # (16, 384)
+                                if rollout_robot_q is not None and hist_prefix_robot_q is not None:
+                                    h_q = build_rollout_robot_q(
+                                        hist_prefix_robot_q,
+                                        mode=mode,
+                                        joint_lower=kin_limits.joint_lower_14.numpy(),
+                                        joint_upper=kin_limits.joint_upper_14.numpy(),
+                                    )
+                                    q_slice = np.concatenate([h_q[:4], rollout_robot_q[i : i + 1 + chunk_size]], axis=0)
                             else:
                                 hist5_u8 = np.stack(rollout_frames_u8[-5:], axis=0)  # (5, H, W, C)
                                 cond_tensor = torch.from_numpy(hist5_u8).permute(0, 3, 1, 2)  # (5, C, H, W)
                                 act_slice = actions[i - 4 : i + chunk_size]  # (16, 384): 4 past + 12 future
+                                if rollout_robot_q is not None:
+                                    q_slice = rollout_robot_q[i - 4 : i + 1 + chunk_size]  # (17, 14)
                             pad_count = model_req_frames - 5
                             vid_input = torch.cat(
                                 [cond_tensor, cond_tensor[-1:].repeat(pad_count, 1, 1, 1)], dim=0
@@ -410,6 +582,7 @@ def run_benchmark(
                             prompt="",
                             input_path=vid_input,
                             action=torch.from_numpy(act_slice).float(),
+                            robot_q=torch.from_numpy(q_slice).float() if q_slice is not None else None,
                             guidance=0,
                             num_video_frames=model_req_frames,
                             num_latent_conditional_frames=cur_cond_latents,
@@ -447,7 +620,8 @@ def run_benchmark(
             per_ep_native = []
             per_ep_l_wrist = []
             per_ep_r_wrist = []
-            for _, eid, desc in chosen_clips:
+            per_ep_xview = []
+            for ds_idx, eid, desc in chosen_clips:
                 gt_vid = np.load(model_dir / f"ep{eid:02d}_gt_ref.npy")
                 pr_vid = np.load(model_dir / f"ep{eid:02d}_{mode}.npy")
 
@@ -468,6 +642,18 @@ def run_benchmark(
                     per_ep_r_wrist.append(
                         compute_video_metrics(gt_vid[:, 288:, 320:], pr_vid[:, 288:, 320:], lpips_fn, chunk_size)
                     )
+                    q_path = model_dir / f"ep{eid:02d}_robot_q.npy"
+                    if q_path.exists():
+                        q_ep = np.load(q_path)
+                    else:
+                        d_tmp = ds[ds_idx]
+                        q_ep = d_tmp["robot_q"][:num_frames].numpy() if "robot_q" in d_tmp else None
+                        if q_ep is not None:
+                            np.save(q_path, q_ep)
+                    if q_ep is not None:
+                        per_ep_xview.append(
+                            compute_crossview_3d_consistency(gt_vid, pr_vid, q_ep, camera_layout=layout)
+                        )
 
             def agg(lst):
                 return {
@@ -489,6 +675,11 @@ def run_benchmark(
             if per_ep_l_wrist:
                 entry["left_wrist"] = agg(per_ep_l_wrist)
                 entry["right_wrist"] = agg(per_ep_r_wrist)
+            if per_ep_xview:
+                entry["crossview_3d"] = {
+                    k: float(np.mean([x[k] for x in per_ep_xview]))
+                    for k in per_ep_xview[0].keys()
+                }
             model_metrics["modes"][mode] = entry
 
         metrics_path.write_text(json.dumps(model_metrics, indent=2))
@@ -525,6 +716,30 @@ def run_benchmark(
                 f"{m['label']:20s} | {gt['psnr']:7.2f}d | {gt['ssim']:7.3f} | {gt['lpips']:8.3f} | "
                 f"{gt['left_half_psnr']:6.2f}d | {gt['right_half_psnr']:6.2f}d | {dz:+7.2f}d | {dn:+7.2f}d | {chk}"
             )
+
+    # 3-Panel Wrist No-Regression & Long-Horizon 3D Cross-View Consistency Summary
+    three_panel_models = [m for m in all_summaries if "left_wrist" in m["modes"]["gt"]]
+    if three_panel_models:
+        print("\n" + "=" * 114)
+        print("3-PANEL WRIST PSNR (NO-REGRESSION) & LONG-HORIZON 3D CROSS-VIEW CONSISTENCY (LOWER = MORE CONSISTENT)")
+        print("=" * 114)
+        print(
+            f"{'Model':20s} | {'L-Wrist':>8s} | {'R-Wrist':>8s} | "
+            f"{'XV-Worst All':>12s} | {'XV-Worst Ch3-4':>14s} | {'XV-Agree All':>12s} | {'XV-Agree Ch3-4':>14s}"
+        )
+        print("-" * 114)
+        for m in three_panel_models:
+            lw = m["modes"]["gt"]["left_wrist"]["psnr"]
+            rw = m["modes"]["gt"]["right_wrist"]["psnr"]
+            xv = m["modes"]["gt"].get("crossview_3d")
+            if xv:
+                print(
+                    f"{m['label']:20s} | {lw:7.2f}d | {rw:7.2f}d | "
+                    f"{xv['worst_view_l1_all']:12.4f} | {xv['worst_view_l1_chk34']:14.4f} | "
+                    f"{xv['pair_agree_err_all']:12.4f} | {xv['pair_agree_err_chk34']:14.4f}"
+                )
+            else:
+                print(f"{m['label']:20s} | {lw:7.2f}d | {rw:7.2f}d | {'N/A':>12s} | {'N/A':>14s} | {'N/A':>12s} | {'N/A':>14s}")
 
 
 if __name__ == "__main__":

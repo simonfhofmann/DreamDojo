@@ -23,6 +23,7 @@ from einops import rearrange
 from cosmos_predict2._src.imaginaire.utils import log
 from cosmos_predict2._src.predict2.conditioner import DataType
 from cosmos_predict2._src.predict2.networks.minimal_v4_dit import MiniTrainDIT
+from torch.distributed._composable.fsdp import fully_shard
 
 
 class Mlp(nn.Module):
@@ -206,6 +207,18 @@ class ActionChunkConditionedMinimalV1LVGDiT(MiniTrainDIT):
         if "hidden_dim_in_action_embedder" in kwargs:
             del kwargs["hidden_dim_in_action_embedder"]
 
+        # Optional 3D multi-view geometric conditioning & epipolar relation attention (Exp 4a)
+        self.use_plucker_rays = bool(kwargs.pop("use_plucker_rays", False))
+        self.use_epipolar_relation = bool(kwargs.pop("use_epipolar_relation", False))
+        epipolar_block_indices = kwargs.pop("epipolar_block_indices", None)
+        epipolar_inner_dim = int(kwargs.pop("epipolar_inner_dim", 512))
+        epipolar_num_heads = int(kwargs.pop("epipolar_num_heads", 8))
+        epipolar_geom_hidden_dim = int(kwargs.pop("epipolar_geom_hidden_dim", 32))
+        plucker_hidden_dim = int(kwargs.pop("plucker_hidden_dim", 256))
+        dkx_camera_layout = str(kwargs.pop("dkx_camera_layout", "three_panel_1to1"))
+        dkx_urdf_path = kwargs.pop("dkx_urdf_path", None)
+        dkx_intrinsics_path = kwargs.pop("dkx_intrinsics_path", None)
+
         # NOTE: this is not used in the original code, but we need it for the rectified flow model
         self.timestep_scale = timestep_scale
 
@@ -232,6 +245,68 @@ class ActionChunkConditionedMinimalV1LVGDiT(MiniTrainDIT):
             drop=0,
         )
 
+        # Optional Exp 4a modules (all off by default for 100% backward compatibility)
+        self.dkx_kinematics = None
+        self.plucker_encoder = None
+        self.epipolar_blocks = None
+        self.epipolar_block_indices: Tuple[int, ...] = ()
+        if self.use_plucker_rays or self.use_epipolar_relation:
+            from groot_dreams.geometry.dkx_kinematics import (
+                DEFAULT_INTRINSICS_PATH,
+                DEFAULT_URDF_PATH,
+                DKXKinematics,
+            )
+            from cosmos_predict2._src.predict2.action.networks.geometric_relation import (
+                EpipolarCrossViewRelationBlock,
+                PluckerPatchEncoder,
+            )
+
+            self.dkx_kinematics = DKXKinematics(
+                urdf_path=dkx_urdf_path or DEFAULT_URDF_PATH,
+                intrinsics_path=dkx_intrinsics_path or DEFAULT_INTRINSICS_PATH,
+                camera_layout=dkx_camera_layout,
+            )
+            if self.use_plucker_rays:
+                self.plucker_encoder = PluckerPatchEncoder(
+                    model_channels=self.model_channels,
+                    hidden_dim=plucker_hidden_dim,
+                )
+            if self.use_epipolar_relation:
+                idxs = list(epipolar_block_indices) if epipolar_block_indices is not None else [6, 13, 20, 26]
+                self.epipolar_block_indices = tuple(int(i) for i in idxs)
+                self.epipolar_blocks = nn.ModuleDict(
+                    {
+                        str(idx): EpipolarCrossViewRelationBlock(
+                            model_channels=self.model_channels,
+                            inner_dim=epipolar_inner_dim,
+                            num_heads=epipolar_num_heads,
+                            geom_hidden_dim=epipolar_geom_hidden_dim,
+                        )
+                        for idx in self.epipolar_block_indices
+                    }
+                )
+            log.info(
+                f"Enabled 3D geometric conditioning: use_plucker_rays={self.use_plucker_rays}, "
+                f"use_epipolar_relation={self.use_epipolar_relation}, "
+                f"epipolar_block_indices={self.epipolar_block_indices}, layout={dkx_camera_layout}"
+            )
+
+    def init_weights(self):
+        super().init_weights()
+        if getattr(self, "dkx_kinematics", None) is not None:
+            self.dkx_kinematics.init_buffers()
+        if getattr(self, "plucker_encoder", None) is not None:
+            self.plucker_encoder.init_weights()
+        if getattr(self, "epipolar_blocks", None) is not None:
+            for blk in self.epipolar_blocks.values():
+                blk.init_weights()
+
+    def fully_shard(self, mesh, offload_policy=None):
+        super().fully_shard(mesh, offload_policy=offload_policy)
+        if getattr(self, "epipolar_blocks", None) is not None:
+            for blk in self.epipolar_blocks.values():
+                fully_shard(blk, mesh=mesh, reshard_after_forward=True, offload_policy=offload_policy)
+
     def forward(
         self,
         x_B_C_T_H_W: torch.Tensor,
@@ -243,6 +318,7 @@ class ActionChunkConditionedMinimalV1LVGDiT(MiniTrainDIT):
         data_type: Optional[DataType] = DataType.VIDEO,
         img_context_emb: Optional[torch.Tensor] = None,
         action: Optional[torch.Tensor] = None,
+        robot_q: Optional[torch.Tensor] = None,
         intermediate_feature_ids: Optional[List[int]] = None,
         **kwargs,
     ) -> torch.Tensor | List[torch.Tensor] | Tuple[torch.Tensor, List[torch.Tensor]]:
@@ -324,6 +400,32 @@ class ActionChunkConditionedMinimalV1LVGDiT(MiniTrainDIT):
 
         B, T, H, W, D = x_B_T_H_W_D.shape
 
+        epipolar_geom = None
+        if (self.use_plucker_rays or self.use_epipolar_relation) and robot_q is not None:
+            from groot_dreams.geometry.dkx_kinematics import compute_pairwise_epipolar_geometry
+
+            with torch.no_grad():
+                plk = self.dkx_kinematics.compute_plucker_rays(
+                    robot_q.to(device=x_B_T_H_W_D.device),
+                    target_t_lat=T,
+                    temporal_compression_ratio=self._num_action_per_latent_frame,
+                )
+            assert (H, W) == (self.dkx_kinematics.tok_h, self.dkx_kinematics.tok_w), (
+                f"Expected token grid {(self.dkx_kinematics.tok_h, self.dkx_kinematics.tok_w)}, got {(H, W)}"
+            )
+            if self.plucker_encoder is not None:
+                plk_emb = self.plucker_encoder(plk["plucker"], plk["view_ids"]).type_as(x_B_T_H_W_D)
+                x_B_T_H_W_D = x_B_T_H_W_D + plk_emb
+            if self.epipolar_blocks is not None:
+                with torch.no_grad():
+                    epipolar_geom = compute_pairwise_epipolar_geometry(
+                        plk["rays_o"].reshape(B * T, H * W, 3),
+                        plk["rays_d"].reshape(B * T, H * W, 3),
+                        plk["view_ids"].reshape(H * W),
+                        self.dkx_kinematics.workspace_min,
+                        self.dkx_kinematics.workspace_max,
+                    )
+
         intermediate_features_outputs = []
         for i, block in enumerate(self.blocks):
             x_B_T_H_W_D = block(
@@ -334,6 +436,8 @@ class ActionChunkConditionedMinimalV1LVGDiT(MiniTrainDIT):
                 adaln_lora_B_T_3D=adaln_lora_B_T_3D,
                 extra_per_block_pos_emb=extra_pos_emb_B_T_H_W_D_or_T_H_W_B_D,
             )
+            if epipolar_geom is not None and str(i) in self.epipolar_blocks:
+                x_B_T_H_W_D = self.epipolar_blocks[str(i)](x_B_T_H_W_D, epipolar_geom)
             if intermediate_feature_ids and i in intermediate_feature_ids:
                 x_reshaped_for_disc = rearrange(x_B_T_H_W_D, "b tp hp wp d -> b (tp hp wp) d")
                 intermediate_features_outputs.append(x_reshaped_for_disc)

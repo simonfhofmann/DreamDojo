@@ -13,11 +13,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import shutil
+
 import torch
 
 from cosmos_predict2._src.imaginaire.utils import log
 from cosmos_predict2._src.imaginaire.utils.callback import Callback
 from cosmos_predict2._src.predict2.models.text2world_model import DiffusionModel
+
+
+def _has_c_compiler() -> bool:
+    cc = os.environ.get("CC")
+    if cc and (os.path.isfile(cc) or shutil.which(cc) is not None):
+        return True
+    return any(shutil.which(cmd) is not None for cmd in ("gcc", "cc", "clang", "c++"))
 
 
 class CompileTokenizer(Callback):
@@ -35,6 +45,13 @@ class CompileTokenizer(Callback):
         self, model: DiffusionModel, data_batch: dict[str, torch.Tensor], iteration: int = 0
     ) -> None:
         if not self.enabled or self.compiled:
+            return
+
+        if os.environ.get("TORCH_COMPILE_DISABLE") == "1" or not _has_c_compiler():
+            log.warning(
+                "Tokenizer compilation requested, but torch.compile is disabled or no C compiler is available – skipping compilation."
+            )
+            self.enabled = False
             return
 
         if isinstance(model.tokenizer, torch.jit.ScriptModule):
